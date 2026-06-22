@@ -70,6 +70,12 @@ class SplitterTests(unittest.TestCase):
         self.assertIn("4", prompt)
         self.assertIn("JSON", prompt)
 
+    def test_prompt_includes_segmentation_style(self):
+        prompt = build_segmentation_prompt("hello", max_segments=4, style="active")
+
+        self.assertIn("shorter", prompt)
+        self.assertIn("active", prompt)
+
 
 if __name__ == "__main__":
     unittest.main()

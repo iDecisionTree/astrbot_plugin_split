@@ -1,47 +1,171 @@
 {
-  "enabled": {
-    "description": "启用分段输出处理。",
-    "type": "bool",
-    "default": true
+  "basic_settings": {
+    "description": "基础设置",
+    "type": "object",
+    "hint": "控制插件启用范围和触发条件。",
+    "items": {
+      "enabled": {
+        "description": "启用智能分段",
+        "hint": "关闭后插件不会处理任何回复。",
+        "type": "bool",
+        "default": true
+      },
+      "only_llm_result": {
+        "description": "仅处理模型回复",
+        "hint": "开启后只处理 LLM 或 Agent 生成的纯文本回复。",
+        "type": "bool",
+        "default": true
+      },
+      "min_length": {
+        "description": "最小触发长度",
+        "hint": "回复文本短于该字符数时不调用分段模型。设为 0 表示所有文本都可处理。",
+        "type": "int",
+        "default": 15,
+        "slider": {
+          "min": 0,
+          "max": 300,
+          "step": 1
+        }
+      }
+    }
   },
-  "only_llm_result": {
-    "description": "仅处理模型生成的回复。",
-    "type": "bool",
-    "default": true
+  "model_settings": {
+    "description": "分段模型",
+    "type": "object",
+    "hint": "选择用于重新分段的 LLM，并控制它的输出风格。",
+    "items": {
+      "provider_id": {
+        "description": "分段模型 Provider ID",
+        "hint": "留空时使用当前会话正在使用的聊天模型；也可以选择一个小模型专门做分段。",
+        "type": "string",
+        "default": "",
+        "_special": "select_provider"
+      },
+      "style": {
+        "description": "分段风格",
+        "hint": "natural 更像普通聊天；conservative 更少分段；active 更短更活泼。",
+        "type": "string",
+        "options": [
+          "natural",
+          "conservative",
+          "active"
+        ],
+        "default": "natural"
+      },
+      "system_prompt": {
+        "description": "系统提示词",
+        "hint": "约束分段模型只返回 JSON，并且不要改写原文。",
+        "type": "text",
+        "default": "You are a strict text segmenter. Return only valid JSON. Do not summarize, translate, rewrite, add, or remove content."
+      },
+      "temperature": {
+        "description": "分段模型温度",
+        "hint": "建议保持较低，避免分段模型改写内容。",
+        "type": "float",
+        "default": 0.3,
+        "slider": {
+          "min": 0,
+          "max": 2,
+          "step": 0.1
+        }
+      },
+      "max_tokens": {
+        "description": "分段模型最大输出 token",
+        "hint": "限制分段模型返回 JSON 的最大长度。",
+        "type": "int",
+        "default": 600,
+        "slider": {
+          "min": 64,
+          "max": 4096,
+          "step": 32
+        }
+      },
+      "timeout_seconds": {
+        "description": "分段模型超时时间",
+        "hint": "超过该时间会使用本地规则兜底分段。设为 0 表示不额外设置超时。",
+        "type": "float",
+        "default": 12.0,
+        "slider": {
+          "min": 0,
+          "max": 60,
+          "step": 0.5
+        }
+      }
+    }
   },
-  "split_provider_id": {
-    "description": "用于执行分段任务的 LLM Provider ID。留空时使用当前会话正在使用的对话模型。",
-    "type": "string",
-    "default": ""
+  "split_settings": {
+    "description": "分段规则",
+    "type": "object",
+    "hint": "限制分段数量，并配置分段模型不可用时的本地兜底规则。",
+    "items": {
+      "max_segments": {
+        "description": "最大分段数量",
+        "hint": "限制单次回复最多拆成多少条，超出的内容会合并到最后一段。",
+        "type": "int",
+        "default": 8,
+        "slider": {
+          "min": 1,
+          "max": 20,
+          "step": 1
+        }
+      },
+      "fallback_max_chars": {
+        "description": "兜底分段长度",
+        "hint": "分段模型不可用或返回格式错误时，超过该字符数的纯文本会用本地规则分段。设为 0 可关闭本地兜底分段。",
+        "type": "int",
+        "default": 700,
+        "slider": {
+          "min": 0,
+          "max": 4000,
+          "step": 50
+        }
+      }
+    }
   },
-  "split_model_system_prompt": {
-    "description": "分段模型的系统提示词。要求模型只返回 JSON，不改写原文。",
-    "type": "text",
-    "default": "You are a strict text segmenter. Return only valid JSON. Do not summarize, translate, rewrite, add, or remove content."
-  },
-  "split_model_timeout_seconds": {
-    "description": "调用分段模型的超时时间，单位为秒。设为 0 表示不额外设置超时。",
-    "type": "float",
-    "default": 30
-  },
-  "max_segments": {
-    "description": "最大分段数量。超出的内容会合并到最后一段。",
-    "type": "int",
-    "default": 5
-  },
-  "fallback_max_chars": {
-    "description": "分段模型不可用或返回格式错误时，超过该字符数的纯文本会用本地规则兜底分段。设为 0 可关闭兜底分段。",
-    "type": "int",
-    "default": 700
-  },
-  "send_separately": {
-    "description": "将分段内容主动发送为多条消息。关闭后仅替换消息链，交由 AstrBot 原流程发送。",
-    "type": "bool",
-    "default": true
-  },
-  "send_interval_seconds": {
-    "description": "分段消息之间的发送间隔，单位为秒。",
-    "type": "float",
-    "default": 0.8
+  "send_settings": {
+    "description": "发送设置",
+    "type": "object",
+    "hint": "控制分段消息是否主动逐条发送，以及每段之间的延迟。",
+    "items": {
+      "send_separately": {
+        "description": "逐条发送分段",
+        "hint": "开启后插件会主动把每段作为独立消息发送；关闭后只替换消息链，交由 AstrBot 原流程发送。",
+        "type": "bool",
+        "default": true
+      },
+      "delay_base": {
+        "description": "基础发送延迟",
+        "hint": "每段发送后的基础等待时间，单位为秒。",
+        "type": "float",
+        "default": 0.35,
+        "slider": {
+          "min": 0,
+          "max": 5,
+          "step": 0.05
+        }
+      },
+      "delay_per_char": {
+        "description": "按字符增加延迟",
+        "hint": "每个字符额外增加的等待时间，单位为秒/字符。",
+        "type": "float",
+        "default": 0.015,
+        "slider": {
+          "min": 0,
+          "max": 0.2,
+          "step": 0.005
+        }
+      },
+      "delay_max": {
+        "description": "单段最大发送延迟",
+        "hint": "单段发送后的最大等待时间，单位为秒。设为 0 表示不限制最大值。",
+        "type": "float",
+        "default": 1.2,
+        "slider": {
+          "min": 0,
+          "max": 10,
+          "step": 0.1
+        }
+      }
+    }
   }
 }

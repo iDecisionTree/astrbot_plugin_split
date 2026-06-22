@@ -30,15 +30,29 @@ DEFAULT_SPLIT_SYSTEM_PROMPT = (
 )
 
 DEFAULT_CONFIG = {
-    "enabled": True,
-    "only_llm_result": True,
-    "split_provider_id": "",
-    "split_model_system_prompt": DEFAULT_SPLIT_SYSTEM_PROMPT,
-    "split_model_timeout_seconds": 30,
-    "max_segments": 5,
-    "fallback_max_chars": 700,
-    "send_separately": True,
-    "send_interval_seconds": 0.8,
+    "basic_settings": {
+        "enabled": True,
+        "only_llm_result": True,
+        "min_length": 15,
+    },
+    "model_settings": {
+        "provider_id": "",
+        "style": "natural",
+        "system_prompt": DEFAULT_SPLIT_SYSTEM_PROMPT,
+        "temperature": 0.3,
+        "max_tokens": 600,
+        "timeout_seconds": 12.0,
+    },
+    "split_settings": {
+        "max_segments": 8,
+        "fallback_max_chars": 700,
+    },
+    "send_settings": {
+        "send_separately": True,
+        "delay_base": 0.35,
+        "delay_per_char": 0.015,
+        "delay_max": 1.2,
+    },
 }
 
 
@@ -56,7 +70,7 @@ class SplitPlugin(Star):
 
     @filter.on_decorating_result(priority=-1000)
     async def split_decorating_result(self, event: AstrMessageEvent) -> None:
-        if not self._get_bool("enabled"):
+        if not self._get_bool("basic_settings.enabled", "enabled"):
             return
 
         result = event.get_result()
@@ -70,6 +84,8 @@ class SplitPlugin(Star):
         text = "".join(comp.text for comp in result.chain)
         if not text.strip():
             return
+        if len(text) < self._get_int("basic_settings.min_length", "min_length"):
+            return
 
         segments = await self._split_with_secondary_llm(event, text)
         if not segments:
@@ -78,7 +94,10 @@ class SplitPlugin(Star):
                 return
             segments = fallback.segments
 
-        if len(segments) <= 1 or not self._get_bool("send_separately"):
+        if len(segments) <= 1 or not self._get_bool(
+            "send_settings.send_separately",
+            "send_separately",
+        ):
             result.chain = [Plain(segment) for segment in segments]
             return
 
@@ -98,19 +117,43 @@ class SplitPlugin(Star):
             logger.warning("Context.llm_generate is unavailable; using local fallback.")
             return []
 
-        prompt = build_segmentation_prompt(text, self._get_int("max_segments"))
-        system_prompt = self._get_str("split_model_system_prompt")
-        timeout = self._get_float("split_model_timeout_seconds")
+        prompt = build_segmentation_prompt(
+            text,
+            self._get_int("split_settings.max_segments", "max_segments"),
+            self._get_str("model_settings.style", "style"),
+        )
+        system_prompt = self._get_str(
+            "model_settings.system_prompt",
+            "split_model_system_prompt",
+        )
+        timeout = self._get_float(
+            "model_settings.timeout_seconds",
+            "split_model_timeout_seconds",
+        )
 
         try:
+            kwargs = {
+                "temperature": self._get_float(
+                    "model_settings.temperature",
+                    "temperature",
+                ),
+                "max_tokens": self._get_int(
+                    "model_settings.max_tokens",
+                    "max_tokens",
+                ),
+            }
             task = self.context.llm_generate(
                 chat_provider_id=provider_id,
                 prompt=prompt,
                 system_prompt=system_prompt,
+                **kwargs,
             )
             response = await asyncio.wait_for(task, timeout) if timeout > 0 else await task
         except Exception:
-            logger.warning("Secondary LLM segmentation failed; using local fallback.", exc_info=True)
+            logger.warning(
+                "Secondary LLM segmentation failed; using local fallback.",
+                exc_info=True,
+            )
             return []
 
         split_result = parse_llm_segments(
@@ -120,11 +163,19 @@ class SplitPlugin(Star):
         if split_result.changed:
             return split_result.segments
 
-        logger.warning("Secondary LLM returned invalid segmentation JSON; using local fallback.")
+        logger.warning(
+            "Secondary LLM returned invalid segmentation JSON; using local fallback.",
+        )
         return []
 
     def _get_split_provider_id(self, event: AstrMessageEvent) -> str:
-        configured = self._get_str("split_provider_id").strip()
+        configured = self._get_str(
+            "model_settings.provider_id",
+            "split_provider_id",
+        ).strip()
+        if not configured:
+            legacy_provider_id = self._read_config_path("provider_id", "")
+            configured = str(legacy_provider_id or "").strip()
         if configured:
             return configured
 
@@ -143,11 +194,24 @@ class SplitPlugin(Star):
         result: Any,
         segments: list[str],
     ) -> None:
-        interval = self._get_float("send_interval_seconds")
         for index, segment in enumerate(segments):
             await event.send(result.derive([Plain(segment)]))
+            interval = self._calc_delay(segment)
             if interval > 0 and index < len(segments) - 1:
                 await asyncio.sleep(interval)
+
+    def _calc_delay(self, segment: str) -> float:
+        legacy_interval = self._get_optional_float("send_interval_seconds")
+        if legacy_interval is not None:
+            return legacy_interval
+
+        base = self._get_float("send_settings.delay_base")
+        per_char = self._get_float("send_settings.delay_per_char")
+        max_delay = self._get_float("send_settings.delay_max")
+        delay = base + len(segment) * per_char
+        if max_delay > 0:
+            return min(delay, max_delay)
+        return delay
 
     def _response_text(self, response: Any) -> str:
         chain = getattr(getattr(response, "result_chain", None), "chain", None)
@@ -159,12 +223,15 @@ class SplitPlugin(Star):
 
     def _split_options(self) -> SplitOptions:
         return SplitOptions(
-            max_segments=self._get_int("max_segments"),
-            fallback_max_chars=self._get_int("fallback_max_chars"),
+            max_segments=self._get_int("split_settings.max_segments", "max_segments"),
+            fallback_max_chars=self._get_int(
+                "split_settings.fallback_max_chars",
+                "fallback_max_chars",
+            ),
         )
 
     def _should_process_result(self, result: Any) -> bool:
-        if not self._get_bool("only_llm_result"):
+        if not self._get_bool("basic_settings.only_llm_result", "only_llm_result"):
             return True
 
         checker = getattr(result, "is_model_result", None)
@@ -182,31 +249,66 @@ class SplitPlugin(Star):
     def _is_plain_chain(chain: list[Any]) -> bool:
         return bool(chain) and all(isinstance(comp, Plain) for comp in chain)
 
-    def _get_value(self, key: str) -> Any:
-        if hasattr(self.config, "get"):
-            return self.config.get(key, DEFAULT_CONFIG[key])
-        return DEFAULT_CONFIG[key]
+    def _get_value(self, key: str, legacy_key: str | None = None) -> Any:
+        missing = object()
+        value = self._read_config_path(key, missing)
+        if value is not missing:
+            return value
+        if legacy_key:
+            value = self._read_config_path(legacy_key, missing)
+            if value is not missing:
+                return value
+        return self._read_default_path(key)
 
-    def _get_bool(self, key: str) -> bool:
-        value = self._get_value(key)
+    def _read_config_path(self, key: str, default: Any) -> Any:
+        if not hasattr(self.config, "get"):
+            return default
+        current: Any = self.config
+        for part in key.split("."):
+            if not hasattr(current, "get"):
+                return default
+            current = current.get(part, default)
+            if current is default:
+                return default
+        return current
+
+    @staticmethod
+    def _read_default_path(key: str) -> Any:
+        current: Any = DEFAULT_CONFIG
+        for part in key.split("."):
+            current = current[part]
+        return current
+
+    def _get_bool(self, key: str, legacy_key: str | None = None) -> bool:
+        value = self._get_value(key, legacy_key)
         if isinstance(value, str):
             return value.strip().lower() in {"1", "true", "yes", "on"}
         return bool(value)
 
-    def _get_int(self, key: str) -> int:
+    def _get_int(self, key: str, legacy_key: str | None = None) -> int:
         try:
-            return max(0, int(self._get_value(key)))
+            return max(0, int(self._get_value(key, legacy_key)))
         except (TypeError, ValueError):
-            return int(DEFAULT_CONFIG[key])
+            return int(self._read_default_path(key))
 
-    def _get_float(self, key: str) -> float:
+    def _get_float(self, key: str, legacy_key: str | None = None) -> float:
         try:
-            return max(0.0, float(self._get_value(key)))
+            return max(0.0, float(self._get_value(key, legacy_key)))
         except (TypeError, ValueError):
-            return float(DEFAULT_CONFIG[key])
+            return float(self._read_default_path(key))
 
-    def _get_str(self, key: str) -> str:
-        value = self._get_value(key)
+    def _get_optional_float(self, key: str) -> float | None:
+        missing = object()
+        value = self._read_config_path(key, missing)
+        if value is missing:
+            return None
+        try:
+            return max(0.0, float(value))
+        except (TypeError, ValueError):
+            return None
+
+    def _get_str(self, key: str, legacy_key: str | None = None) -> str:
+        value = self._get_value(key, legacy_key)
         if value is None:
             return ""
         return str(value)

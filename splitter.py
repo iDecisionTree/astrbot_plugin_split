@@ -22,10 +22,16 @@ class SplitResult:
     used_llm: bool
 
 
-def build_segmentation_prompt(text: str, max_segments: int = 5) -> str:
+def build_segmentation_prompt(
+    text: str,
+    max_segments: int = 5,
+    style: str = "natural",
+) -> str:
     segment_limit = max(1, int(max_segments or 1))
+    style_name, style_instruction = _style_instruction(style)
     return (
         "Split the assistant reply below into natural message segments.\n"
+        f"Segmentation style: {style_name}. {style_instruction}\n"
         f"Return at most {segment_limit} segments.\n"
         "Return only JSON: either an array of strings or an object with a "
         '"segments" string array.\n'
@@ -36,6 +42,15 @@ def build_segmentation_prompt(text: str, max_segments: int = 5) -> str:
         f"{text or ''}\n"
         "</assistant_reply>"
     )
+
+
+def _style_instruction(style: str) -> tuple[str, str]:
+    normalized = (style or "natural").strip().lower()
+    if normalized == "conservative":
+        return "conservative", "Use fewer, longer segments unless a clear pause exists."
+    if normalized == "active":
+        return "active", "Use shorter, livelier chat-like segments while preserving meaning."
+    return "natural", "Use balanced segments that feel like normal conversation."
 
 
 def parse_llm_segments(text: str, options: SplitOptions | None = None) -> SplitResult:
