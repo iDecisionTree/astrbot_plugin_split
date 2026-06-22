@@ -71,36 +71,60 @@ class SplitPlugin(Star):
     @filter.on_decorating_result(priority=-1000)
     async def split_decorating_result(self, event: AstrMessageEvent) -> None:
         if not self._get_bool("basic_settings.enabled", "enabled"):
+            logger.debug("分段插件跳过处理：插件未启用。")
             return
 
         result = event.get_result()
         if result is None or not getattr(result, "chain", None):
+            logger.debug("分段插件跳过处理：消息结果为空。")
             return
         if not self._should_process_result(result):
+            logger.debug("分段插件跳过处理：不是模型回复。")
             return
         if not self._is_plain_chain(result.chain):
+            logger.debug("分段插件跳过处理：消息链包含非文本组件。")
             return
 
         text = "".join(comp.text for comp in result.chain)
         if not text.strip():
+            logger.debug("分段插件跳过处理：文本为空。")
             return
-        if len(text) < self._get_int("basic_settings.min_length", "min_length"):
+        min_length = self._get_int("basic_settings.min_length", "min_length")
+        if len(text) < min_length:
+            logger.debug(
+                "分段插件跳过处理：文本长度 %s 小于最小触发长度 %s。",
+                len(text),
+                min_length,
+            )
             return
 
         segments = await self._split_with_secondary_llm(event, text)
         if not segments:
             fallback = split_response_text(text, self._split_options())
             if not fallback.changed:
+                logger.info(
+                    "分段插件保留原文：分段模型没有返回可用分段，且未触发本地兜底。",
+                )
                 return
             segments = fallback.segments
+            logger.info(
+                "分段插件使用本地兜底：文本长度=%s，分段数=%s。",
+                len(text),
+                len(segments),
+            )
 
         if len(segments) <= 1 or not self._get_bool(
             "send_settings.send_separately",
             "send_separately",
         ):
             result.chain = [Plain(segment) for segment in segments]
+            logger.info(
+                "分段插件已替换消息链：分段数=%s，未启用逐条发送。",
+                len(segments),
+            )
             return
 
+        logger.info("分段插件开始逐条发送：分段数=%s。", len(segments))
         await self._send_segments(event, result, segments)
         event.clear_result()
 
@@ -111,16 +135,18 @@ class SplitPlugin(Star):
     ) -> list[str]:
         provider_id = self._get_split_provider_id(event)
         if not provider_id:
-            logger.warning("Split provider is not configured; using local fallback.")
+            logger.warning("未配置分段模型 Provider，使用本地兜底。")
             return []
         if not callable(getattr(self.context, "llm_generate", None)):
-            logger.warning("Context.llm_generate is unavailable; using local fallback.")
+            logger.warning("当前 AstrBot Context 不支持 llm_generate，使用本地兜底。")
             return []
 
+        style = self._get_str("model_settings.style", "style")
+        max_segments = self._get_int("split_settings.max_segments", "max_segments")
         prompt = build_segmentation_prompt(
             text,
-            self._get_int("split_settings.max_segments", "max_segments"),
-            self._get_str("model_settings.style", "style"),
+            max_segments,
+            style,
         )
         system_prompt = self._get_str(
             "model_settings.system_prompt",
@@ -132,6 +158,14 @@ class SplitPlugin(Star):
         )
 
         try:
+            logger.info(
+                "分段插件开始请求分段模型：provider_id=%s，文本长度=%s，"
+                "最大分段数=%s，风格=%s。",
+                provider_id,
+                len(text),
+                max_segments,
+                style,
+            )
             kwargs = {
                 "temperature": self._get_float(
                     "model_settings.temperature",
@@ -151,7 +185,7 @@ class SplitPlugin(Star):
             response = await asyncio.wait_for(task, timeout) if timeout > 0 else await task
         except Exception:
             logger.warning(
-                "Secondary LLM segmentation failed; using local fallback.",
+                "调用分段模型失败，使用本地兜底。",
                 exc_info=True,
             )
             return []
@@ -161,10 +195,14 @@ class SplitPlugin(Star):
             self._split_options(),
         )
         if split_result.changed:
+            logger.info(
+                "分段模型分段成功：分段数=%s。",
+                len(split_result.segments),
+            )
             return split_result.segments
 
         logger.warning(
-            "Secondary LLM returned invalid segmentation JSON; using local fallback.",
+            "分段模型返回的 JSON 不可用，使用本地兜底。",
         )
         return []
 
@@ -242,7 +280,7 @@ class SplitPlugin(Star):
         if callable(checker):
             return bool(checker())
 
-        logger.debug("Skip split: result type cannot be identified as LLM output.")
+        logger.debug("分段插件跳过处理：无法识别该结果是否为模型输出。")
         return False
 
     @staticmethod
