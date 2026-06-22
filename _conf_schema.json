@@ -54,9 +54,9 @@
       },
       "system_prompt": {
         "description": "系统提示词",
-        "hint": "约束分段模型只返回 JSON，并且不要改写原文。",
+        "hint": "约束分段模型只返回 split_after 位置 JSON，并且不要复写或改写原文。",
         "type": "text",
-        "default": "You are a strict text segmenter. Return only valid JSON. Do not summarize, translate, rewrite, add, or remove content."
+        "default": "You are a strict text segmenter. Return only a valid JSON object with split_after offsets. Do not copy, summarize, translate, rewrite, add, or remove content."
       },
       "temperature": {
         "description": "分段模型温度",
@@ -71,9 +71,9 @@
       },
       "max_tokens": {
         "description": "分段模型最大输出 token",
-        "hint": "限制分段模型返回 JSON 的最大长度。",
+        "hint": "限制分段模型返回位置 JSON 的最大长度。新版本只返回切分位置，通常不需要很大。",
         "type": "int",
-        "default": 600,
+        "default": 256,
         "slider": {
           "min": 64,
           "max": 4096,
@@ -84,7 +84,7 @@
         "description": "分段模型超时时间",
         "hint": "超过该时间会使用本地规则兜底分段。设为 0 表示不额外设置超时。",
         "type": "float",
-        "default": 12.0,
+        "default": 20.0,
         "slider": {
           "min": 0,
           "max": 60,

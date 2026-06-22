@@ -12,6 +12,7 @@ try:
     from .splitter import (
         SplitOptions,
         build_segmentation_prompt,
+        describe_secondary_llm_failure,
         parse_llm_segments,
         split_response_text,
     )
@@ -19,14 +20,16 @@ except ImportError:
     from splitter import (
         SplitOptions,
         build_segmentation_prompt,
+        describe_secondary_llm_failure,
         parse_llm_segments,
         split_response_text,
     )
 
 
 DEFAULT_SPLIT_SYSTEM_PROMPT = (
-    "You are a strict text segmenter. Return only valid JSON. "
-    "Do not summarize, translate, rewrite, add, or remove content."
+    "You are a strict text segmenter. Return only a valid JSON object with "
+    "split_after offsets. Do not copy, summarize, translate, rewrite, add, "
+    "or remove content."
 )
 
 DEFAULT_CONFIG = {
@@ -40,8 +43,8 @@ DEFAULT_CONFIG = {
         "style": "natural",
         "system_prompt": DEFAULT_SPLIT_SYSTEM_PROMPT,
         "temperature": 0.3,
-        "max_tokens": 600,
-        "timeout_seconds": 12.0,
+        "max_tokens": 256,
+        "timeout_seconds": 20.0,
     },
     "split_settings": {
         "max_segments": 8,
@@ -183,16 +186,23 @@ class SplitPlugin(Star):
                 **kwargs,
             )
             response = await asyncio.wait_for(task, timeout) if timeout > 0 else await task
-        except Exception:
-            logger.warning(
-                "调用分段模型失败，使用本地兜底。",
-                exc_info=True,
-            )
+        except (TimeoutError, asyncio.TimeoutError) as exc:
+            message, include_trace = describe_secondary_llm_failure(exc, timeout)
+            logger.info(message)
+            if include_trace:
+                logger.debug("分段模型异常详情。", exc_info=True)
+            return []
+        except Exception as exc:
+            message, include_trace = describe_secondary_llm_failure(exc, timeout)
+            logger.warning(message)
+            if include_trace:
+                logger.debug("分段模型异常详情。", exc_info=True)
             return []
 
         split_result = parse_llm_segments(
             self._response_text(response),
             self._split_options(),
+            original_text=text,
         )
         if split_result.changed:
             logger.info(
