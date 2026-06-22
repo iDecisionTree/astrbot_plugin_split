@@ -6,81 +6,53 @@ from typing import Any
 from astrbot.api import AstrBotConfig, logger
 from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.message_components import Plain
-from astrbot.api.provider import LLMResponse, ProviderRequest
 from astrbot.api.star import Context, Star, register
 
 try:
-    from .splitter import SplitOptions, build_split_prompt, split_response_text
+    from .splitter import (
+        SplitOptions,
+        build_segmentation_prompt,
+        parse_llm_segments,
+        split_response_text,
+    )
 except ImportError:
-    from splitter import SplitOptions, build_split_prompt, split_response_text
+    from splitter import (
+        SplitOptions,
+        build_segmentation_prompt,
+        parse_llm_segments,
+        split_response_text,
+    )
 
+
+DEFAULT_SPLIT_SYSTEM_PROMPT = (
+    "You are a strict text segmenter. Return only valid JSON. "
+    "Do not summarize, translate, rewrite, add, or remove content."
+)
 
 DEFAULT_CONFIG = {
     "enabled": True,
     "only_llm_result": True,
-    "inject_prompt": True,
+    "split_provider_id": "",
+    "split_model_system_prompt": DEFAULT_SPLIT_SYSTEM_PROMPT,
+    "split_model_timeout_seconds": 30,
     "max_segments": 5,
     "fallback_max_chars": 700,
     "send_separately": True,
     "send_interval_seconds": 0.8,
 }
 
-_EVENT_SEGMENTS_KEY = "_astrbot_plugin_split_segments"
-
 
 @register(
     "astrbot_plugin_split",
     "DecisionTree",
-    "Split long LLM text replies into marker-based segments.",
+    "Split long LLM text replies with a secondary LLM.",
     "1.0.0",
 )
 class SplitPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig | None = None):
         super().__init__(context)
+        self.context = context
         self.config = config or {}
-
-    @filter.on_llm_request()
-    async def inject_split_prompt(
-        self,
-        event: AstrMessageEvent,
-        req: ProviderRequest,
-    ) -> None:
-        if not self._get_bool("enabled") or not self._get_bool("inject_prompt"):
-            return
-
-        prompt = build_split_prompt(self._get_int("max_segments"))
-        system_prompt = getattr(req, "system_prompt", None) or ""
-        if prompt in system_prompt:
-            return
-
-        req.system_prompt = (
-            f"{system_prompt.rstrip()}\n\n{prompt}" if system_prompt.strip() else prompt
-        )
-
-    @filter.on_llm_response()
-    async def clean_llm_response(
-        self,
-        event: AstrMessageEvent,
-        resp: LLMResponse,
-    ) -> None:
-        if not self._get_bool("enabled") or resp is None:
-            return
-        if getattr(resp, "is_chunk", False):
-            return
-
-        text = self._response_text(resp)
-        if not text:
-            return
-
-        split_result = split_response_text(text, self._split_options())
-        if not split_result.changed:
-            return
-
-        event.set_extra(_EVENT_SEGMENTS_KEY, split_result.segments)
-        if getattr(resp, "result_chain", None):
-            resp.result_chain.chain = [Plain(segment) for segment in split_result.segments]
-        else:
-            resp.completion_text = "\n\n".join(split_result.segments)
 
     @filter.on_decorating_result(priority=-1000)
     async def split_decorating_result(self, event: AstrMessageEvent) -> None:
@@ -95,15 +67,16 @@ class SplitPlugin(Star):
         if not self._is_plain_chain(result.chain):
             return
 
-        stored_segments = event.get_extra(_EVENT_SEGMENTS_KEY)
-        if stored_segments:
-            segments = [comp.text for comp in result.chain if comp.text.strip()]
-        else:
-            text = "".join(comp.text for comp in result.chain)
-            split_result = split_response_text(text, self._split_options())
-            if not split_result.changed:
+        text = "".join(comp.text for comp in result.chain)
+        if not text.strip():
+            return
+
+        segments = await self._split_with_secondary_llm(event, text)
+        if not segments:
+            fallback = split_response_text(text, self._split_options())
+            if not fallback.changed:
                 return
-            segments = split_result.segments
+            segments = fallback.segments
 
         if len(segments) <= 1 or not self._get_bool("send_separately"):
             result.chain = [Plain(segment) for segment in segments]
@@ -111,6 +84,58 @@ class SplitPlugin(Star):
 
         await self._send_segments(event, result, segments)
         event.clear_result()
+
+    async def _split_with_secondary_llm(
+        self,
+        event: AstrMessageEvent,
+        text: str,
+    ) -> list[str]:
+        provider_id = self._get_split_provider_id(event)
+        if not provider_id:
+            logger.warning("Split provider is not configured; using local fallback.")
+            return []
+        if not callable(getattr(self.context, "llm_generate", None)):
+            logger.warning("Context.llm_generate is unavailable; using local fallback.")
+            return []
+
+        prompt = build_segmentation_prompt(text, self._get_int("max_segments"))
+        system_prompt = self._get_str("split_model_system_prompt")
+        timeout = self._get_float("split_model_timeout_seconds")
+
+        try:
+            task = self.context.llm_generate(
+                chat_provider_id=provider_id,
+                prompt=prompt,
+                system_prompt=system_prompt,
+            )
+            response = await asyncio.wait_for(task, timeout) if timeout > 0 else await task
+        except Exception:
+            logger.warning("Secondary LLM segmentation failed; using local fallback.", exc_info=True)
+            return []
+
+        split_result = parse_llm_segments(
+            self._response_text(response),
+            self._split_options(),
+        )
+        if split_result.changed:
+            return split_result.segments
+
+        logger.warning("Secondary LLM returned invalid segmentation JSON; using local fallback.")
+        return []
+
+    def _get_split_provider_id(self, event: AstrMessageEvent) -> str:
+        configured = self._get_str("split_provider_id").strip()
+        if configured:
+            return configured
+
+        provider = self.context.get_using_provider(event.unified_msg_origin)
+        if provider is None:
+            return ""
+
+        try:
+            return str(provider.meta().id or "")
+        except Exception:
+            return str(getattr(provider, "provider_config", {}).get("id", ""))
 
     async def _send_segments(
         self,
@@ -124,13 +149,13 @@ class SplitPlugin(Star):
             if interval > 0 and index < len(segments) - 1:
                 await asyncio.sleep(interval)
 
-    def _response_text(self, resp: LLMResponse) -> str:
-        chain = getattr(getattr(resp, "result_chain", None), "chain", None)
+    def _response_text(self, response: Any) -> str:
+        chain = getattr(getattr(response, "result_chain", None), "chain", None)
         if chain:
-            if not self._is_plain_chain(chain):
-                return ""
-            return "".join(comp.text for comp in chain)
-        return getattr(resp, "completion_text", "") or ""
+            plain_texts = [comp.text for comp in chain if isinstance(comp, Plain)]
+            if plain_texts:
+                return "".join(plain_texts)
+        return getattr(response, "completion_text", "") or ""
 
     def _split_options(self) -> SplitOptions:
         return SplitOptions(
@@ -179,3 +204,9 @@ class SplitPlugin(Star):
             return max(0.0, float(self._get_value(key)))
         except (TypeError, ValueError):
             return float(DEFAULT_CONFIG[key])
+
+    def _get_str(self, key: str) -> str:
+        value = self._get_value(key)
+        if value is None:
+            return ""
+        return str(value)

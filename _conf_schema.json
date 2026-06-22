@@ -9,10 +9,20 @@
     "type": "bool",
     "default": true
   },
-  "inject_prompt": {
-    "description": "引导模型使用 [start] 和 [end] 包裹每个回复分段。",
-    "type": "bool",
-    "default": true
+  "split_provider_id": {
+    "description": "用于执行分段任务的 LLM Provider ID。留空时使用当前会话正在使用的对话模型。",
+    "type": "string",
+    "default": ""
+  },
+  "split_model_system_prompt": {
+    "description": "分段模型的系统提示词。要求模型只返回 JSON，不改写原文。",
+    "type": "text",
+    "default": "You are a strict text segmenter. Return only valid JSON. Do not summarize, translate, rewrite, add, or remove content."
+  },
+  "split_model_timeout_seconds": {
+    "description": "调用分段模型的超时时间，单位为秒。设为 0 表示不额外设置超时。",
+    "type": "float",
+    "default": 30
   },
   "max_segments": {
     "description": "最大分段数量。超出的内容会合并到最后一段。",
@@ -20,12 +30,12 @@
     "default": 5
   },
   "fallback_max_chars": {
-    "description": "当模型没有输出分段标记时，超过该字符数的纯文本会自动分段。设为 0 可关闭兜底分段。",
+    "description": "分段模型不可用或返回格式错误时，超过该字符数的纯文本会用本地规则兜底分段。设为 0 可关闭兜底分段。",
     "type": "int",
     "default": 700
   },
   "send_separately": {
-    "description": "将分段内容主动发送为多条消息。关闭后仅清理分段标记，并交由 AstrBot 原流程发送。",
+    "description": "将分段内容主动发送为多条消息。关闭后仅替换消息链，交由 AstrBot 原流程发送。",
     "type": "bool",
     "default": true
   },

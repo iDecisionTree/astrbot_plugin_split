@@ -1,8 +1,11 @@
+import json
 import re
 from dataclasses import dataclass
+from json import JSONDecodeError
+from typing import Any
 
 
-_MARKER_RE = re.compile(r"\[start\](.*?)\[end\]", re.DOTALL | re.IGNORECASE)
+_FENCE_RE = re.compile(r"```(?:json)?\s*(.*?)```", re.DOTALL | re.IGNORECASE)
 
 
 @dataclass(frozen=True)
@@ -16,32 +19,49 @@ class SplitOptions:
 class SplitResult:
     segments: list[str]
     changed: bool
-    used_markers: bool
+    used_llm: bool
 
 
-def build_split_prompt(max_segments: int = 5) -> str:
+def build_segmentation_prompt(text: str, max_segments: int = 5) -> str:
     segment_limit = max(1, int(max_segments or 1))
     return (
-        "Output segmentation rule: wrap every text response segment exactly as "
-        "[start]segment text[end]. "
-        f"Use at most {segment_limit} segments. "
-        "For short answers, use one [start]...[end] block. "
-        "Do not put any response text outside these markers. "
-        "Keep code blocks, lists, and markdown inside segment content."
+        "Split the assistant reply below into natural message segments.\n"
+        f"Return at most {segment_limit} segments.\n"
+        "Return only JSON: either an array of strings or an object with a "
+        '"segments" string array.\n'
+        "Do not summarize, translate, rewrite, add, or remove content.\n"
+        "Keep code blocks, markdown, URLs, and lists intact inside segment strings.\n"
+        "\n"
+        "<assistant_reply>\n"
+        f"{text or ''}\n"
+        "</assistant_reply>"
+    )
+
+
+def parse_llm_segments(text: str, options: SplitOptions | None = None) -> SplitResult:
+    opts = options or SplitOptions()
+    payload = _load_json_payload(text or "")
+    if payload is None:
+        return SplitResult(segments=[], changed=False, used_llm=False)
+
+    raw_segments = payload.get("segments") if isinstance(payload, dict) else payload
+    if not isinstance(raw_segments, list):
+        return SplitResult(segments=[], changed=False, used_llm=False)
+
+    segments = _clean_segments(raw_segments, opts.strip_segments)
+    if not segments:
+        return SplitResult(segments=[], changed=False, used_llm=False)
+
+    return SplitResult(
+        segments=_cap_segments(segments, opts.max_segments, "\n\n"),
+        changed=True,
+        used_llm=True,
     )
 
 
 def split_response_text(text: str, options: SplitOptions | None = None) -> SplitResult:
     opts = options or SplitOptions()
     original = text or ""
-
-    marked_segments = _extract_marked_segments(original, opts.strip_segments)
-    if marked_segments:
-        return SplitResult(
-            segments=_cap_segments(marked_segments, opts.max_segments, "\n\n"),
-            changed=True,
-            used_markers=True,
-        )
 
     if opts.fallback_max_chars > 0 and len(original) > opts.fallback_max_chars:
         return SplitResult(
@@ -51,18 +71,49 @@ def split_response_text(text: str, options: SplitOptions | None = None) -> Split
                 "",
             ),
             changed=True,
-            used_markers=False,
+            used_llm=False,
         )
 
-    return SplitResult(segments=[original], changed=False, used_markers=False)
+    return SplitResult(segments=[original], changed=False, used_llm=False)
 
 
-def _extract_marked_segments(text: str, strip_segments: bool) -> list[str]:
+def _load_json_payload(text: str) -> Any | None:
+    candidate = _strip_json_fence(text.strip())
+    if not candidate:
+        return None
+
+    try:
+        return json.loads(candidate)
+    except JSONDecodeError:
+        return _scan_json_payload(candidate)
+
+
+def _strip_json_fence(text: str) -> str:
+    match = _FENCE_RE.search(text)
+    if match:
+        return match.group(1).strip()
+    return text
+
+
+def _scan_json_payload(text: str) -> Any | None:
+    decoder = json.JSONDecoder()
+    for index, char in enumerate(text):
+        if char not in "[{":
+            continue
+        try:
+            payload, _ = decoder.raw_decode(text[index:])
+            return payload
+        except JSONDecodeError:
+            continue
+    return None
+
+
+def _clean_segments(values: list[Any], strip_segments: bool) -> list[str]:
     segments = []
-    for match in _MARKER_RE.finditer(text):
-        segment = match.group(1)
-        if strip_segments:
-            segment = segment.strip()
+    for value in values:
+        if not isinstance(value, str):
+            continue
+        segment = value.strip() if strip_segments else value
         if segment:
             segments.append(segment)
     return segments
