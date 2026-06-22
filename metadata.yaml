@@ -1,6 +1,6 @@
 name: astrbot_plugin_split
 display_name: 分割
-desc: 分割输出。
+desc: 分割。
 version: v1.0.0
 author: DecisionTree
 repo: https://github.com/iDecisionTree/astrbot_plugin_split

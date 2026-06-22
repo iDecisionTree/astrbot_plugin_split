@@ -1,36 +1,36 @@
 {
   "enabled": {
-    "description": "Enable split output processing.",
+    "description": "启用分段输出处理。",
     "type": "bool",
     "default": true
   },
   "only_llm_result": {
-    "description": "Only process model-generated replies.",
+    "description": "仅处理模型生成的回复。",
     "type": "bool",
     "default": true
   },
   "inject_prompt": {
-    "description": "Ask the model to wrap reply segments with [start] and [end].",
+    "description": "引导模型使用 [start] 和 [end] 包裹每个回复分段。",
     "type": "bool",
     "default": true
   },
   "max_segments": {
-    "description": "Maximum number of output segments. Overflow content is merged into the final segment.",
+    "description": "最大分段数量。超出的内容会合并到最后一段。",
     "type": "int",
     "default": 5
   },
   "fallback_max_chars": {
-    "description": "When markers are missing, split plain text longer than this many characters. Set 0 to disable fallback splitting.",
+    "description": "当模型没有输出分段标记时，超过该字符数的纯文本会自动分段。设为 0 可关闭兜底分段。",
     "type": "int",
     "default": 700
   },
   "send_separately": {
-    "description": "Actively send split segments as separate messages. If disabled, the plugin only cleans markers and leaves final sending to AstrBot.",
+    "description": "将分段内容主动发送为多条消息。关闭后仅清理分段标记，并交由 AstrBot 原流程发送。",
     "type": "bool",
     "default": true
   },
   "send_interval_seconds": {
-    "description": "Delay between separate segment messages.",
+    "description": "分段消息之间的发送间隔，单位为秒。",
     "type": "float",
     "default": 0.8
   }
