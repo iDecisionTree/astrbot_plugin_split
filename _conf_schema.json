@@ -1,0 +1,37 @@
+{
+  "enabled": {
+    "description": "Enable split output processing.",
+    "type": "bool",
+    "default": true
+  },
+  "only_llm_result": {
+    "description": "Only process model-generated replies.",
+    "type": "bool",
+    "default": true
+  },
+  "inject_prompt": {
+    "description": "Ask the model to wrap reply segments with [start] and [end].",
+    "type": "bool",
+    "default": true
+  },
+  "max_segments": {
+    "description": "Maximum number of output segments. Overflow content is merged into the final segment.",
+    "type": "int",
+    "default": 5
+  },
+  "fallback_max_chars": {
+    "description": "When markers are missing, split plain text longer than this many characters. Set 0 to disable fallback splitting.",
+    "type": "int",
+    "default": 700
+  },
+  "send_separately": {
+    "description": "Actively send split segments as separate messages. If disabled, the plugin only cleans markers and leaves final sending to AstrBot.",
+    "type": "bool",
+    "default": true
+  },
+  "send_interval_seconds": {
+    "description": "Delay between separate segment messages.",
+    "type": "float",
+    "default": 0.8
+  }
+}
